@@ -1,3 +1,9 @@
 scikit-learn
 pandas
 numpy
+flask
+flask_cors
+sqlalchemy
+psycopg2-binary
+gunicorn
+
