@@ -9,7 +9,7 @@ export default function Home() {
   const [feedbackMsg, setFeedbackMsg] = useState("");
 
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:5000";
-k
+
   const checkToxic = async () => {
     setPending(true);
     setError("");
