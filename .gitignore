@@ -28,16 +28,13 @@ instance/
 *.pkl
 *.csv
 *.tsv
-*.json
-# Allow your *model.json* if you want, or ignore and generate on deploy
-!model.json
 
-# Feedback/user data (keep private, don't track user-provided data)
+# Feedback/user data (keep private)
 feedback_log.csv
 cpp_filter/feedback_log.csv
 cpp_filter/instant_overrides.json
 
-# Node/React/Next.js
+# Node/React/Next.js (if you ever run Node in root)
 node_modules/
 .next/
 out/
@@ -54,5 +51,5 @@ pnpm-debug.log*
 *~
 Thumbs.db
 
-# OS X/macOS files
+# macOS files
 .DS_Store
