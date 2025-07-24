@@ -8,13 +8,15 @@ export default function Home() {
   const [pending, setPending] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState("");
 
+  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:5000";
+
   const checkToxic = async () => {
     setPending(true);
     setError("");
     setResult(null);
     setFeedbackMsg("");
     try {
-      const res = await fetch("http://127.0.0.1:5000/api/check", {
+      const res = await fetch(`${apiBase}/api/check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: input }),
@@ -31,7 +33,7 @@ export default function Home() {
   const sendFeedback = async (isToxic: boolean) => {
     setFeedbackMsg("Sending feedback...");
     try {
-      await fetch("http://127.0.0.1:5000/api/feedback", {
+      await fetch(`${apiBase}/api/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: input, label: isToxic ? 1 : 0 }),
