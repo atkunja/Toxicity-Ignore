@@ -18,11 +18,6 @@ def load_model():
     WEIGHTS = np.array(model["weights"])
     BIAS = model["bias"]
     print(f'Loaded vocab size: {len(VOCAB)}')
-    for word in ["dyke", "nigger", "nigga", "faggot", "cunt"]:
-        in_vocab = word in VOCAB
-        idx = VOCAB.get(word)
-        w = WEIGHTS[idx] if idx is not None else None
-        print(f'"{word}" in vocab? {in_vocab} | Weight: {w}')
     return model, VOCAB, WEIGHTS, BIAS
 
 model, VOCAB, WEIGHTS, BIAS = load_model()
