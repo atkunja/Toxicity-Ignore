@@ -1,9 +1,11 @@
+import json
+import os
+import re
+
 import pandas as pd
+from joblib import dump
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-import json
-import re
-import os
 
 # --- Step 1: Load Jigsaw dataset ---
 df = pd.read_csv("train.csv")
@@ -77,7 +79,7 @@ vectorizer = TfidfVectorizer(
 X = vectorizer.fit_transform(df["text"])
 
 # --- Step 7: Train logistic regression ---
-model = LogisticRegression(max_iter=1000)
+model = LogisticRegression(max_iter=1000, class_weight="balanced")
 model.fit(X, y)
 
 # --- Step 8: Convert vocab indices to int and export model ---
@@ -89,6 +91,16 @@ model_data = {
 }
 with open("model.json", "w") as f:
     json.dump(model_data, f, indent=2)
+
+# --- Step 8b: Persist full sklearn objects for accurate inference ---
+dump(
+    {
+        "vectorizer": vectorizer,
+        "classifier": model,
+    },
+    "model.joblib",
+)
+print("Saved sklearn vectorizer+classifier to model.joblib")
 
 # --- Step 9: Print final checks for key feedback words ---
 for word in ["dyke", "nigger", "nigga", "faggot", "cunt"]:  # Add more if you want to check

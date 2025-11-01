@@ -1,18 +1,9 @@
-import json
-from sklearn.feature_extraction.text import TfidfVectorizer
-import numpy as np
+from joblib import load
 
-# Load model and vocab
-with open("model.json", "r") as f:
-    model_data = json.load(f)
-
-vocab = model_data["vocab"]
-weights = np.array(model_data["weights"])
-bias = model_data["bias"]
-
-# Use same vocab in vectorizer (fit with dummy data so .transform works)
-vectorizer = TfidfVectorizer(vocabulary=vocab)
-vectorizer.fit(["dummy"])  # Fit with dummy to satisfy scikit-learn's internal check
+# Load trained sklearn objects
+bundle = load("model.joblib")
+vectorizer = bundle["vectorizer"]
+classifier = bundle["classifier"]
 
 # Test input
 test_sentences = [
@@ -24,10 +15,7 @@ test_sentences = [
 ]
 
 X_test = vectorizer.transform(test_sentences)
-
-# Manual prediction (dot product + bias)
-scores = X_test @ weights + bias
-preds = 1 / (1 + np.exp(-scores))  # sigmoid
+preds = classifier.predict_proba(X_test)[:, 1]
 
 for i, sentence in enumerate(test_sentences):
     label = "❌ Toxic" if preds[i] > 0.5 else "✅ Safe"

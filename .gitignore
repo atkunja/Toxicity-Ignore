@@ -26,6 +26,7 @@ instance/
 *.h5
 *.pth
 *.pkl
+*.joblib
 *.csv
 *.tsv
 
