@@ -19,6 +19,7 @@ class ToxicityModel:
 
     def __init__(self):
         self.mode = None
+        self.pipeline = None
         self.vectorizer = None
         self.classifier = None
         self.vocab = None
@@ -31,12 +32,38 @@ class ToxicityModel:
         if os.path.exists(MODEL_ARTIFACT):
             try:
                 bundle = load(MODEL_ARTIFACT)
-                self.vectorizer = bundle["vectorizer"]
-                self.classifier = bundle["classifier"]
-                self.mode = "sklearn"
-                vocab_size = len(getattr(self.vectorizer, "vocabulary_", {}))
-                print(f"Loaded sklearn model.joblib (vocab size: {vocab_size})")
-                return
+                if isinstance(bundle, dict) and "pipeline" in bundle:
+                    self.pipeline = bundle["pipeline"]
+                    self.vectorizer = None
+                    self.classifier = None
+                    self.vocab = None
+                    self.weights = None
+                    self.bias = None
+                    self.mode = "pipeline"
+                    feature_summary = []
+                    for step_name, estimator in getattr(self.pipeline, "steps", []):
+                        if step_name == "features" and hasattr(
+                            estimator, "transformer_list"
+                        ):
+                            for name, transformer in estimator.transformer_list:
+                                vocab_size = len(getattr(transformer, "vocabulary_", {}))
+                                feature_summary.append(f"{name}:{vocab_size}")
+                            break
+                    summary = ", ".join(feature_summary) if feature_summary else "pipeline loaded"
+                    print(f"Loaded sklearn pipeline from model.joblib ({summary})")
+                    return
+                if isinstance(bundle, dict) and "vectorizer" in bundle and "classifier" in bundle:
+                    self.pipeline = None
+                    self.vectorizer = bundle["vectorizer"]
+                    self.classifier = bundle["classifier"]
+                    self.vocab = None
+                    self.weights = None
+                    self.bias = None
+                    self.mode = "sklearn"
+                    vocab_size = len(getattr(self.vectorizer, "vocabulary_", {}))
+                    print(f"Loaded sklearn model.joblib (vocab size: {vocab_size})")
+                    return
+                raise ValueError("Unexpected model.joblib structure.")
             except Exception as exc:  # pragma: no cover - defensive logging
                 print(f"Failed to load joblib model: {exc}. Falling back to legacy JSON.")
 
@@ -47,6 +74,7 @@ class ToxicityModel:
             self.vocab = model_data["vocab"]
             self.weights = np.array(model_data["weights"])
             self.bias = model_data["bias"]
+            self.pipeline = None
             self.mode = "legacy"
             print(f"Loaded legacy model.json (vocab size: {len(self.vocab)})")
             return
@@ -67,6 +95,10 @@ class ToxicityModel:
         if self.mode == "sklearn":
             features = self.vectorizer.transform([text])
             prob = self.classifier.predict_proba(features)[0, 1]
+            return float(prob)
+
+        if self.mode == "pipeline":
+            prob = self.pipeline.predict_proba([text])[0, 1]
             return float(prob)
 
         if self.mode == "legacy":

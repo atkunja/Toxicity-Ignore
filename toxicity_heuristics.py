@@ -23,12 +23,22 @@ HIGH_SEVERITY_TERMS = {
     "cunt",
     "whore",
     "slut",
+    "bitch",
+    "motherfucker",
+    "bastard",
+    "chink",
+    "gook",
+    "beaner",
+    "cracker",
+    "coon",
 }
 
 # Regex to catch character obfuscations like f@gg0t or n!gger.
 OBFUSCATION_PATTERNS: Iterable[re.Pattern] = [
     re.compile(r"f[\W_]*a[\W_]*g[\W_]*g[\W_]*o[\W_]*t", re.IGNORECASE),
     re.compile(r"n[\W_]*i[\W_]*g[\W_]*g[\W_]*e[\W_]*r", re.IGNORECASE),
+    re.compile(r"b[\W_]*i[\W_1!]*t[\W_]*c[\W_]*h", re.IGNORECASE),
+    re.compile(r"c[\W_]*u[\W_]*n[\W_]*t", re.IGNORECASE),
 ]
 
 
