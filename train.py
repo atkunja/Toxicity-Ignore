@@ -6,6 +6,8 @@ import pandas as pd
 from joblib import dump
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report
+from sklearn.model_selection import train_test_split
 
 # --- Step 1: Load Jigsaw dataset ---
 df = pd.read_csv("train.csv")
@@ -38,21 +40,24 @@ else:
 
 print(f"Total training rows: {df.shape[0]}")
 
-# --- Step 3: Downsample Jigsaw for feedback effect ---
-if feedback is not None:
-    feedback_count = feedback.shape[0]
-    jigsaw_rows = df.head(len(df) - feedback_count)
-    jigsaw_rows = jigsaw_rows.sample(1000, random_state=42)  # Downsample Jigsaw
-    feedback_rows = df.tail(feedback_count)
-    df = pd.concat([jigsaw_rows, feedback_rows], ignore_index=True)
-    print(f"After downsampling: {df.shape[0]} rows (with feedback)")
+# --- Step 3: Reduce Jigsaw size only if dataset is extremely large to keep training manageable ---
+MAX_JIGSAW_ROWS = 80000
+if len(df) > MAX_JIGSAW_ROWS:
+    toxic = df[df["label"] == 1]
+    non_toxic = df[df["label"] == 0].sample(MAX_JIGSAW_ROWS - len(toxic), random_state=42)
+    df = pd.concat([toxic, non_toxic], ignore_index=True)
+    print(f"Downsampled Jigsaw to {df.shape[0]} rows to keep training fast.")
+else:
+    print("Using full dataset without heavy downsampling.")
 
 # --- Step 4: Vectorizer (big vocab, ngrams, include feedback words/phrases) ---
 vectorizer = TfidfVectorizer(
-    max_features=20000,
-    stop_words="english",
+    max_features=40000,
+    stop_words=None,
     lowercase=True,
-    ngram_range=(1, 2)
+    ngram_range=(1, 2),
+    min_df=2,
+    sublinear_tf=True,
 )
 X = vectorizer.fit_transform(df["text"])
 y = df["label"]
@@ -72,15 +77,24 @@ print(f"Added {added} feedback words/phrases/sentences to vocab.")
 # --- Step 6: Re-vectorize with forced vocab ---
 vectorizer = TfidfVectorizer(
     vocabulary=new_vocab,
-    stop_words="english",
     lowercase=True,
-    ngram_range=(1, 2)
+    ngram_range=(1, 2),
+    min_df=1,
+    sublinear_tf=True,
 )
 X = vectorizer.fit_transform(df["text"])
 
-# --- Step 7: Train logistic regression ---
+# --- Step 7: Train logistic regression with evaluation ---
+X_train, X_valid, y_train, y_valid = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
 model = LogisticRegression(max_iter=1000, class_weight="balanced")
+model.fit(X_train, y_train)
+preds = model.predict(X_valid)
+print("Validation metrics:")
+print(classification_report(y_valid, preds, digits=3))
 model.fit(X, y)
+print("Refit model on full dataset after validation.")
 
 # --- Step 8: Convert vocab indices to int and export model ---
 vocab_clean = {k: int(v) for k, v in vectorizer.vocabulary_.items()}

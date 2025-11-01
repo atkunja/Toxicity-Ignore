@@ -7,6 +7,8 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from joblib import load
 
+from toxicity_heuristics import contains_high_severity_toxicity
+
 MODEL_ARTIFACT = "model.joblib"
 LEGACY_MODEL_FILE = "model.json"
 OVERRIDES_FILE = "cpp_filter/instant_overrides.json"
@@ -150,6 +152,9 @@ def index():
             if norm_text in overrides:
                 prediction = "❌ Toxic" if overrides[norm_text] else "✅ Safe"
                 score = "override"
+            elif contains_high_severity_toxicity(text):
+                prediction = "❌ Toxic"
+                score = "heuristic"
             else:
                 prob = toxicity_model.predict_proba(text)
                 prediction = "❌ Toxic" if prob > 0.5 else "✅ Safe"
@@ -186,6 +191,9 @@ def api_check():
     if norm_text in overrides:
         label = "toxic" if overrides[norm_text] else "safe"
         prob = 1.0 if overrides[norm_text] else 0.0
+    elif contains_high_severity_toxicity(text):
+        label = "toxic"
+        prob = 1.0
     else:
         prob = toxicity_model.predict_proba(text)
         label = "toxic" if prob > 0.5 else "safe"
