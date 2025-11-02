@@ -2,25 +2,28 @@ import json
 import os
 import re
 
+import numpy as np
 import pandas as pd
 from joblib import dump
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.model_selection import train_test_split
+from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import FeatureUnion, Pipeline
 
 DATA_PATH = "train.csv"
 FEEDBACK_PATH = "cpp_filter/feedback_log.csv"
 REPEAT_FEEDBACK = 100
 MAX_JIGSAW_ROWS = 120000
+TARGET_COLUMNS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 
 # --- Step 1: Load dataset ---
 df = pd.read_csv(DATA_PATH)
-df = df[["comment_text", "toxic"]]
-df = df.rename(columns={"comment_text": "text", "toxic": "label"})
+df = df[["comment_text"] + TARGET_COLUMNS]
+df = df.rename(columns={"comment_text": "text"})
 df["text"] = df["text"].fillna("").astype(str)
-df["label"] = df["label"].astype(int)
+df[TARGET_COLUMNS] = df[TARGET_COLUMNS].fillna(0).astype(int)
 
 # --- Step 2: Load feedback (if exists) and enrich vocabulary ---
 feedback_words = set()
@@ -39,6 +42,12 @@ if os.path.exists(FEEDBACK_PATH):
             [" ".join(tokens[i : i + 2]) for i in range(len(tokens) - 1)]
         )
         feedback_words.add(" ".join(tokens))
+    for column in TARGET_COLUMNS:
+        if column == "toxic":
+            feedback[column] = feedback["label"]
+        else:
+            feedback[column] = 0
+    feedback = feedback[["text"] + TARGET_COLUMNS]
     df = pd.concat([df, feedback], ignore_index=True)
 else:
     print("No feedback_log.csv found, continuing with Jigsaw data only.")
@@ -47,16 +56,18 @@ print(f"Total rows after feedback merge: {df.shape[0]}")
 
 # --- Step 3: Optional downsampling for speed ---
 if len(df) > MAX_JIGSAW_ROWS:
-    toxic_rows = df[df["label"] == 1]
+    toxic_rows = df[df["toxic"] == 1]
     remaining = max(MAX_JIGSAW_ROWS - len(toxic_rows), 0)
-    non_toxic_rows = df[df["label"] == 0].sample(remaining, random_state=42)
+    non_toxic_pool = df[df["toxic"] == 0]
+    sample_size = min(remaining, len(non_toxic_pool))
+    non_toxic_rows = non_toxic_pool.sample(sample_size, random_state=42)
     df = pd.concat([toxic_rows, non_toxic_rows], ignore_index=True)
     print(f"Downsampled dataset to {df.shape[0]} rows.")
 else:
     print(f"Using full dataset of {df.shape[0]} rows.")
 
 texts = df["text"]
-labels = df["label"]
+labels_df = df[TARGET_COLUMNS]
 
 # --- Step 4: Advanced TF-IDF + char model for main API ---
 word_tfidf = TfidfVectorizer(
@@ -84,29 +95,34 @@ advanced_pipeline = Pipeline(
         ("features", feature_union),
         (
             "clf",
-            LogisticRegression(
-                max_iter=2000,
-                class_weight="balanced",
-                solver="saga",
-                penalty="l2",
-                C=1.0,
+            OneVsRestClassifier(
+                LogisticRegression(
+                    max_iter=2000,
+                    class_weight="balanced",
+                    solver="saga",
+                    penalty="l2",
+                    C=1.0,
+                )
             ),
         ),
     ]
 )
 
 X_train, X_valid, y_train, y_valid = train_test_split(
-    texts, labels, test_size=0.2, stratify=labels, random_state=42
+    texts, labels_df, test_size=0.2, stratify=labels_df["toxic"], random_state=42
 )
 advanced_pipeline.fit(X_train, y_train)
-val_preds = advanced_pipeline.predict(X_valid)
-val_probs = advanced_pipeline.predict_proba(X_valid)[:, 1]
+val_probs = advanced_pipeline.predict_proba(X_valid)
+if isinstance(val_probs, list):
+    val_probs = np.vstack([p[:, 1] if p.ndim > 1 else p for p in val_probs]).T
+val_preds = (val_probs >= 0.5).astype(int)
+y_valid_array = y_valid.values
 print("Validation metrics (advanced pipeline):")
-print(classification_report(y_valid, val_preds, digits=3))
-print(f"Validation ROC-AUC: {roc_auc_score(y_valid, val_probs):.4f}")
+print(classification_report(y_valid_array, val_preds, target_names=TARGET_COLUMNS, digits=3, zero_division=0))
+print(f"Validation ROC-AUC (macro): {roc_auc_score(y_valid_array, val_probs, average='macro'):.4f}")
 
-advanced_pipeline.fit(texts, labels)
-dump({"pipeline": advanced_pipeline}, "model.joblib")
+advanced_pipeline.fit(texts, labels_df)
+dump({"pipeline": advanced_pipeline, "labels": TARGET_COLUMNS}, "model.joblib")
 print("Saved advanced sklearn pipeline to model.joblib")
 
 # --- Step 5: Legacy bag-of-words logistic model for C++/fallback ---
@@ -133,10 +149,9 @@ count_vectorizer = CountVectorizer(
     lowercase=True,
     ngram_range=(1, 2),
 )
-count_vectorizer.fit(texts)
 X_legacy = count_vectorizer.transform(texts)
 legacy_model = LogisticRegression(max_iter=1000, class_weight="balanced")
-legacy_model.fit(X_legacy, labels)
+legacy_model.fit(X_legacy, labels_df["toxic"])
 
 legacy_vocab_clean = {k: int(v) for k, v in count_vectorizer.vocabulary_.items()}
 legacy_model_data = {

@@ -7,7 +7,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from joblib import load
 
-from toxicity_heuristics import contains_high_severity_toxicity
+from toxicity_heuristics import heuristic_scores
 
 MODEL_ARTIFACT = "model.joblib"
 LEGACY_MODEL_FILE = "model.json"
@@ -25,6 +25,7 @@ class ToxicityModel:
         self.vocab = None
         self.weights = None
         self.bias = None
+        self.label_names: list[str] = ["toxic"]
         self._load()
 
     def _load(self):
@@ -34,6 +35,7 @@ class ToxicityModel:
                 bundle = load(MODEL_ARTIFACT)
                 if isinstance(bundle, dict) and "pipeline" in bundle:
                     self.pipeline = bundle["pipeline"]
+                    self.label_names = bundle.get("labels", ["toxic"])
                     self.vectorizer = None
                     self.classifier = None
                     self.vocab = None
@@ -59,6 +61,7 @@ class ToxicityModel:
                     self.vocab = None
                     self.weights = None
                     self.bias = None
+                    self.label_names = bundle.get("labels", ["toxic"])
                     self.mode = "sklearn"
                     vocab_size = len(getattr(self.vectorizer, "vocabulary_", {}))
                     print(f"Loaded sklearn model.joblib (vocab size: {vocab_size})")
@@ -75,6 +78,7 @@ class ToxicityModel:
             self.weights = np.array(model_data["weights"])
             self.bias = model_data["bias"]
             self.pipeline = None
+            self.label_names = ["toxic"]
             self.mode = "legacy"
             print(f"Loaded legacy model.json (vocab size: {len(self.vocab)})")
             return
@@ -87,26 +91,42 @@ class ToxicityModel:
         """Reload model after retraining."""
         self._load()
 
-    def predict_proba(self, text: str) -> float:
-        """Return toxicity probability for raw text."""
+    def empty_scores(self) -> dict[str, float]:
+        """Return a zero-filled score dictionary for all known labels."""
+        return {label: 0.0 for label in self.label_names}
+
+    def predict_scores(self, text: str) -> dict[str, float]:
+        """Return a dict of label -> probability."""
+        scores = self.empty_scores()
         if not text:
-            return 0.0
+            return scores
+
+        if self.mode == "pipeline":
+            probs = self.pipeline.predict_proba([text])
+            if isinstance(probs, list):
+                # Some sklearn versions return a list of per-class outputs.
+                probs = np.vstack([p[:, 1] if p.ndim > 1 else p for p in probs]).T
+            for label, prob in zip(self.label_names, probs[0]):
+                scores[label] = float(prob)
+            return scores
 
         if self.mode == "sklearn":
             features = self.vectorizer.transform([text])
             prob = self.classifier.predict_proba(features)[0, 1]
-            return float(prob)
-
-        if self.mode == "pipeline":
-            prob = self.pipeline.predict_proba([text])[0, 1]
-            return float(prob)
+            scores["toxic"] = float(prob)
+            return scores
 
         if self.mode == "legacy":
             vec = self._vectorize_legacy(text)
             prob = sigmoid(np.dot(self.weights, vec) + self.bias)
-            return float(prob)
+            scores["toxic"] = float(prob)
+            return scores
 
         raise RuntimeError("Model not loaded.")
+
+    def predict_proba(self, text: str) -> float:
+        """Return legacy single toxicity probability (backwards compatibility)."""
+        return self.predict_scores(text).get("toxic", 0.0)
 
     def _vectorize_legacy(self, text: str) -> np.ndarray:
         tokens = text.lower().split()
@@ -141,6 +161,38 @@ def log_feedback(text, label, repeat=100):
         for _ in range(repeat):
             f.write(f'"{text}",{label}\n')
 
+def evaluate_text(text: str, overrides: dict[str, int]):
+    """Return (label, prob, scores dict, source) for a given text."""
+    norm_text = text.strip().lower()
+    scores = toxicity_model.empty_scores()
+    source = "model"
+
+    if norm_text in overrides:
+        override_label = int(overrides[norm_text])
+        scores["toxic"] = float(override_label)
+        label = "toxic" if override_label else "safe"
+        prob = float(override_label)
+        source = "override"
+        return label, prob, scores, source
+
+    heuristics = heuristic_scores(text)
+    if heuristics:
+        for label_name, value in heuristics.items():
+            if label_name in scores:
+                scores[label_name] = max(scores[label_name], value)
+            else:
+                scores[label_name] = value
+        scores["toxic"] = max(scores.get("toxic", 0.0), heuristics.get("toxic", 1.0))
+        label = "toxic"
+        prob = scores["toxic"]
+        source = "heuristic"
+        return label, prob, scores, source
+
+    scores = toxicity_model.predict_scores(text)
+    prob = scores.get("toxic", 0.0)
+    label = "toxic" if prob > 0.5 else "safe"
+    return label, prob, scores, source
+
 # --- Auto Retrain after feedback ---
 
 def retrain_model():
@@ -165,6 +217,8 @@ def index():
     score = None
     text = ""
     feedback_msg = ""
+    scores = None
+    source = ""
     overrides = load_overrides()
     if request.method == "POST":
         text = request.form.get("text", "")
@@ -181,16 +235,26 @@ def index():
                     f"Feedback saved for '{text}', but model retraining failed. Check server logs."
                 )
         else:
-            if norm_text in overrides:
-                prediction = "❌ Toxic" if overrides[norm_text] else "✅ Safe"
+            label, prob, scores, source = evaluate_text(text, overrides)
+            prediction = "❌ Toxic" if label == "toxic" else "✅ Safe"
+            if source == "override":
                 score = "override"
-            elif contains_high_severity_toxicity(text):
-                prediction = "❌ Toxic"
+            elif source == "heuristic":
                 score = "heuristic"
             else:
-                prob = toxicity_model.predict_proba(text)
-                prediction = "❌ Toxic" if prob > 0.5 else "✅ Safe"
                 score = f"{prob:.3f}"
+    score_list = ""
+    if scores:
+        ordered_labels = list(toxicity_model.label_names)
+        extra_labels = [
+            label for label in scores.keys() if label not in toxicity_model.label_names
+        ]
+        for label in sorted(extra_labels):
+            ordered_labels.append(label)
+        items = "".join(
+            f"<li>{label}: {scores[label]:.3f}</li>" for label in ordered_labels if label in scores
+        )
+        score_list = f"<ul>{items}</ul>"
     return f"""
     <html>
     <head><title>Simple Local Toxicity Filter</title></head>
@@ -201,6 +265,8 @@ def index():
         <input type="submit" value="Check">
       </form>
       {'<h3>Result: ' + prediction + ' (' + score + ')</h3>' if prediction else ''}
+      {f"<p><em>Source: {source}</em></p>" if prediction else ''}
+      {score_list if prediction else ''}
       {f'''
         <form method="POST">
             <input type="hidden" name="text" value="{text}">
@@ -218,18 +284,9 @@ def index():
 def api_check():
     data = request.get_json()
     text = data.get("text", "")
-    norm_text = text.strip().lower()
     overrides = load_overrides()
-    if norm_text in overrides:
-        label = "toxic" if overrides[norm_text] else "safe"
-        prob = 1.0 if overrides[norm_text] else 0.0
-    elif contains_high_severity_toxicity(text):
-        label = "toxic"
-        prob = 1.0
-    else:
-        prob = toxicity_model.predict_proba(text)
-        label = "toxic" if prob > 0.5 else "safe"
-    return jsonify({"label": label, "prob": prob})
+    label, prob, scores, source = evaluate_text(text, overrides)
+    return jsonify({"label": label, "prob": prob, "scores": scores, "source": source})
 
 @app.route("/api/feedback", methods=["POST"])
 def api_feedback():
